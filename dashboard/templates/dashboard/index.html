@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Motorcycle COE (Category D)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/echarts/dist/echarts.min.js"></script>
+
+<style>
+body { background:#f7f7f7; font-family:Arial,sans-serif; }
+header { background:#111; color:#fff; padding:30px; text-align:center; }
+.container { max-width:1100px; margin:auto; padding:20px; }
+
+.kpi-row { display:flex; gap:15px; flex-wrap:wrap; margin-bottom:25px; }
+.kpi-card { flex:1; background:white; padding:20px; border-radius:10px; border-left:6px solid #111; }
+.kpi-card span { font-size:12px; color:#666; }
+.kpi-card strong { font-size:26px; display:block; }
+
+.results-table { width:100%; background:white; border-radius:10px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.1); }
+.results-table th, .results-table td { padding:12px; border-bottom:1px solid #eee; }
+.results-table th { background:#f0f0f0; }
+.positive { color:green; font-weight:bold; }
+.negative { color:red; font-weight:bold; }
+
+.trend-buttons button {
+  border:none; padding:8px 16px; border-radius:6px; background:#ddd; margin-right:6px; cursor:pointer;
+}
+.trend-buttons button.active { background:#111; color:white; }
+
+.chart-card { background:white; padding:20px; border-radius:10px; margin-bottom:30px; height:400px; }
+</style>
+</head>
+
+<body>
+<header>
+  <h1>🏍️ Motorcycle COE – Category D</h1>
+  <p>Live COE bidding results (Official data.gov.sg)</p>
+</header>
+
+<div class="container">
+
+<!-- KPI Cards -->
+<div class="kpi-row">
+  <div class="kpi-card">
+    <span>Latest Premium</span>
+    <strong id="kpi-premium">—</strong>
+    <small id="kpi-change"></small>
+  </div>
+  <div class="kpi-card">
+    <span>Quota</span>
+    <strong id="kpi-quota">—</strong>
+  </div>
+  <div class="kpi-card">
+    <span>Bidders</span>
+    <strong id="kpi-bidders">—</strong>
+  </div>
+  <div class="kpi-card">
+    <span>PQP</span>
+    <strong id="kpi-pqp">—</strong>
+  </div>
+</div>
+
+<!-- Latest COE Table -->
+<h3>Latest COE Results – Category D</h3>
+<table class="results-table">
+<thead>
+<tr>
+  <th>Exercise</th>
+  <th>Premium</th>
+  <th>Change</th>
+  <th>Quota</th>
+  <th>Bidders</th>
+  <th>PQP</th>
+</tr>
+</thead>
+<tbody id="coe-table">
+{% comment %} Populated by JS {% endcomment %}
+</tbody>
+</table>
+
+<!-- Trend Buttons -->
+<h3 class="mt-4">COE Premium Trend</h3>
+<div class="trend-buttons mb-3">
+  <button class="active" data-range="default">Default</button>
+  <button data-range="3M">3M</button>
+  <button data-range="6M">6M</button>
+  <button data-range="1Y">1Y</button>
+  <button data-range="5Y">5Y</button>
+  <button data-range="10Y">10Y</button>
+</div>
+
+<!-- Premium Chart -->
+<div class="chart-card" id="premiumChart"></div>
+
+<!-- PQP Chart -->
+<h3 class="mt-4">PQP Trend (3-Month Moving Average)</h3>
+<div class="chart-card" id="pqpChart"></div>
+
+</div>
+
+<script>
+let records = {{ records|safe }};
+records.forEach(r => r.date = new Date(r.date + "-01"));
+
+// --- KPIs ---
+const latest = records[records.length-1];
+const prev = records[records.length-2] || latest;
+document.getElementById("kpi-premium").innerText = `$${latest.premium}`;
+document.getElementById("kpi-change").innerHTML = (latest.premium - prev.premium >= 0) ? 
+    `<span class="positive">▲ $${latest.premium - prev.premium}</span>` :
+    `<span class="negative">▼ $${Math.abs(latest.premium - prev.premium)}</span>`;
+document.getElementById("kpi-quota").innerText = latest.quota;
+document.getElementById("kpi-bidders").innerText = latest.bids;
+document.getElementById("kpi-pqp").innerText = `$${latest.pqp}`;
+
+// --- Table ---
+const tbody = document.getElementById("coe-table");
+tbody.innerHTML = "";
+records.slice(-3).reverse().forEach((r,i)=>{
+    const prev = records.slice(-3).reverse()[i+1];
+    const change = prev ? r.premium - prev.premium : 0;
+    tbody.innerHTML += `
+        <tr>
+            <td>${i===0?'Latest':i===1?'Previous':'2 Rounds Ago'}</td>
+            <td>$${r.premium}</td>
+            <td>${change>=0?'<span class="positive">▲ $'+change+'</span>':'<span class="negative">▼ $'+Math.abs(change)+'</span>'}</td>
+            <td>${r.quota}</td>
+            <td>${r.bids}</td>
+            <td>$${r.pqp}</td>
+        </tr>
+    `;
+});
+
+// --- Charts ---
+let premiumChart = echarts.init(document.getElementById('premiumChart'));
+let pqpChart = echarts.init(document.getElementById('pqpChart'));
+
+function drawCharts(range){
+    let months = 0;
+    if(range==='3M') months=3;
+    else if(range==='6M') months=6;
+    else if(range==='1Y') months=12;
+    else if(range==='5Y') months=60;
+    else if(range==='10Y') months=120;
+
+    let filtered = (range==='default') ? records : records.slice(-months);
+
+    // --- Default yearly aggregation ---
+    let xData=[], premiumData=[], pqpData=[];
+    if(range==='default'){
+        let mapPremium={}, mapPQP={};
+        filtered.forEach(r=>{
+            const y = r.date.getFullYear();
+            if(!mapPremium[y]) { mapPremium[y]=[]; mapPQP[y]=[]; }
+            mapPremium[y].push(r.premium);
+            mapPQP[y].push(r.pqp);
+        });
+        xData = Object.keys(mapPremium).sort((a,b)=>a-b);
+        premiumData = xData.map(y => Math.round(mapPremium[y].reduce((a,b)=>a+b,0)/mapPremium[y].length));
+        pqpData = xData.map(y => Math.round(mapPQP[y].reduce((a,b)=>a+b,0)/mapPQP[y].length));
+    } else {
+        xData = filtered.map(r=>`${r.date.getFullYear()}-${String(r.date.getMonth()+1).padStart(2,'0')}`);
+        premiumData = filtered.map(r=>r.premium);
+        pqpData = filtered.map(r=>r.pqp);
+    }
+
+    // --- Premium Chart ---
+    premiumChart.setOption({
+        tooltip:{ trigger:'axis' },
+        xAxis:{ type:'category', data:xData },
+        yAxis:{ type:'value', name:'COE Premium ($)' },
+        series:[{
+            name:'Premium',
+            type:'line',
+            smooth:true,
+            data: premiumData,
+            lineStyle:{ color:'#111' },
+            itemStyle:{ color:'#111' },
+            areaStyle:{ color:'rgba(0,0,0,0.05)' }
+        }],
+        grid:{ left:'10%', right:'5%', top:'10%', bottom:'15%' }
+    });
+
+    // --- PQP Chart ---
+    pqpChart.setOption({
+        tooltip:{ trigger:'axis' },
+        xAxis:{ type:'category', data:xData },
+        yAxis:{ type:'value', name:'PQP ($)' },
+        series:[{
+            name:'PQP',
+            type:'line',
+            smooth:true,
+            data: pqpData,
+            lineStyle:{ color:'green' },
+            itemStyle:{ color:'green' },
+            areaStyle:{ color:'rgba(0,128,0,0.05)' }
+        }],
+        grid:{ left:'10%', right:'5%', top:'10%', bottom:'15%' }
+    });
+}
+
+// --- Trend Buttons ---
+document.querySelectorAll('.trend-buttons button').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+        document.querySelectorAll('.trend-buttons button').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        drawCharts(btn.dataset.range);
+    });
+});
+
+// --- Initial Draw ---
+drawCharts('default');
+</script>
+</body>
+</html>
